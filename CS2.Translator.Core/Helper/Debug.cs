@@ -1,132 +1,155 @@
-namespace CS2.Translator.Core.Helper
+namespace CS2.Translator.Core.Helper;
+
+public static class DebugLogger
 {
-    public static class DebugLogger
+    private const long MaxLogBytes = 5_000_000;
+    private const int RotationCheckInterval = 500;
+
+    private static readonly object Lock = new();
+    private static string? _logFilePath;
+    private static int _writesSinceRotationCheck;
+
+    public static bool Enabled { get; private set; }
+
+    public static string? LogFilePath => _logFilePath;
+
+    public static void Initialize(bool enableDebug)
     {
-        private static readonly object _lock = new();
-        private static string? _logFilePath;
-        public static bool Enabled { get; private set; }
+        Enabled = enableDebug;
+        if (!Enabled)
+            return;
 
-        public static void Initialize(bool enableDebug)
+        try
         {
-            Enabled = enableDebug;
-            if (!Enabled)
-                return;
+            var logDir = AppPaths.EnsureLogDirectory();
+            _logFilePath = Path.Combine(logDir, "debug.log");
 
-            try
-            {
-                string baseDir;
+            RotateIfNeeded();
 
-                if (OperatingSystem.IsWindows())
-                {
-                    baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                }
-                else
-                {
-                    baseDir = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                        ".config"
-                    );
-                }
-
-                string appDir = Path.Combine(baseDir, "CS2-Translator");
-                string logDir = Path.Combine(appDir, "logs");
-                Directory.CreateDirectory(logDir);
-
-                _logFilePath = Path.Combine(logDir, "debug.log");
-
-                File.WriteAllText(_logFilePath, $"[Debug Start] {DateTime.Now}\n");
-                Log($"Logger initialized on {GetPlatformName()} at {_logFilePath}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DebugLogger] Initialization failed: {ex.Message}");
-            }
+            File.AppendAllText(_logFilePath, $"[Debug Start] {DateTime.Now}{Environment.NewLine}");
+            Log($"Logger initialized on {GetPlatformName()} at {_logFilePath}");
         }
-
-
-        public static void Log(string message)
+        catch (Exception ex)
         {
-            string formatted = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
-            
-            Console.WriteLine(formatted);
-
-            if (!Enabled || _logFilePath is null)
-                return;
-
-            try
-            {
-                lock (_lock)
-                {
-                    File.AppendAllText(_logFilePath, formatted + Environment.NewLine);
-                }
-            }
-            catch
-            {
-                // Ignore write errors
-            }
+            Enabled = false;
+            _logFilePath = null;
+            Console.Error.WriteLine($"[DebugLogger] Initialization failed: {ex.Message}");
         }
-
-        public static void LogException(Exception ex, string? context = null)
-        {
-            string msg = $"[EXCEPTION] {context ?? "Unhandled"}: {ex.Message}\n{ex.StackTrace}";
-            Log(msg);
-        }
-
-        public static void RotateIfNeeded(long maxBytes = 5_000_000)
-        {
-            if (!Enabled || _logFilePath is null)
-                return;
-
-            try
-            {
-                var info = new FileInfo(_logFilePath);
-                if (info.Exists && info.Length > maxBytes)
-                {
-                    string archive = Path.Combine(
-                        info.DirectoryName!,
-                        $"debug_{DateTime.Now:yyyyMMdd_HHmmss}.log"
-                    );
-
-                    File.Move(_logFilePath, archive, overwrite: false);
-                    File.WriteAllText(_logFilePath, $"[Debug Rotated] {DateTime.Now}\n");
-                    Log($"Log rotated - {archive}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DebugLogger] Rotation failed: {ex.Message}");
-            }
-        }
-        
-        public static void OpenLogFolder()
-        {
-            if (_logFilePath is null)
-                return;
-
-            try
-            {
-                string? folder = Path.GetDirectoryName(_logFilePath);
-                if (folder is null)
-                    return;
-
-                if (OperatingSystem.IsWindows())
-                {
-                    System.Diagnostics.Process.Start("explorer.exe", folder);
-                }
-                else if (OperatingSystem.IsLinux())
-                {
-                    System.Diagnostics.Process.Start("xdg-open", folder);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DebugLogger] Could not open folder: {ex.Message}");
-            }
-        }
-
-        public static string GetPlatformName() =>
-            OperatingSystem.IsWindows() ? "Windows" :
-            OperatingSystem.IsLinux() ? "Linux" :
-            "Unknown";
     }
+
+    public static void Log(string message, string? tag = null)
+    {
+        if (!Enabled)
+            return;
+
+        var formatted = tag is null
+            ? $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}"
+            : $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{tag}] {message}";
+
+        Console.WriteLine(formatted);
+
+        if (_logFilePath is null)
+            return;
+
+        try
+        {
+            lock (Lock)
+            {
+                File.AppendAllText(_logFilePath, formatted + Environment.NewLine);
+
+                if (++_writesSinceRotationCheck >= RotationCheckInterval)
+                {
+                    _writesSinceRotationCheck = 0;
+                    RotateIfNeededCore();
+                }
+            }
+        }
+        catch
+        {
+            // Logging must never take the app down.
+        }
+    }
+
+    public static void LogException(Exception ex, string? context = null)
+    {
+        // Failures are worth surfacing even with debug logging off, but only to stderr.
+        if (!Enabled)
+        {
+            Console.Error.WriteLine($"[{context ?? "Unhandled"}] {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+
+        Log($"[EXCEPTION] {context ?? "Unhandled"}: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}");
+    }
+
+    public static void RotateIfNeeded()
+    {
+        lock (Lock)
+        {
+            RotateIfNeededCore();
+        }
+    }
+
+    private static void RotateIfNeededCore()
+    {
+        if (_logFilePath is null)
+            return;
+
+        try
+        {
+            var info = new FileInfo(_logFilePath);
+            if (!info.Exists || info.Length <= MaxLogBytes)
+                return;
+
+            var archive = Path.Combine(
+                info.DirectoryName!,
+                $"debug_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+
+            File.Move(_logFilePath, archive, overwrite: true);
+            File.WriteAllText(_logFilePath, $"[Debug Rotated] {DateTime.Now}{Environment.NewLine}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DebugLogger] Rotation failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Opens the data folder in the platform file manager. Always available so users can find the config.</summary>
+    public static void OpenLogFolder()
+    {
+        try
+        {
+            var folder = _logFilePath is not null
+                ? Path.GetDirectoryName(_logFilePath)
+                : AppPaths.EnsureBaseDirectory();
+
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+                folder = AppPaths.EnsureBaseDirectory();
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = folder,
+                UseShellExecute = true
+            };
+
+            if (OperatingSystem.IsLinux())
+            {
+                startInfo.FileName = "xdg-open";
+                startInfo.Arguments = $"\"{folder}\"";
+                startInfo.UseShellExecute = false;
+            }
+
+            System.Diagnostics.Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            LogException(ex, "OpenLogFolder");
+        }
+    }
+
+    public static string GetPlatformName() =>
+        OperatingSystem.IsWindows() ? "Windows" :
+        OperatingSystem.IsLinux() ? "Linux" :
+        OperatingSystem.IsMacOS() ? "macOS" :
+        "Unknown";
 }

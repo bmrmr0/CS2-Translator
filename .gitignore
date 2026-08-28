@@ -1,16 +1,80 @@
-# IDE
-.idea/
-*.user
-
-# Build
-**/bin/
-**/obj/
+# ---------- Build output ----------
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+artifacts/
 publish/
+Generated\ Files/
+
+# ---------- Publishing / packaging ----------
 AppDir/
-
-# AppImage
 *.AppImage
+*.nupkg
+*.snupkg
+*.msi
+*.msix
+*.appx
+*.appxbundle
 
-# OS
+# ---------- Test & coverage ----------
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.coveragexml
+
+# ---------- MSBuild / NuGet ----------
+*.binlog
+msbuild.log
+msbuild.err
+msbuild.wrn
+project.lock.json
+*.nuget.props
+*.nuget.targets
+# Keep a checked-in NuGet.config if one is ever added.
+
+# ---------- IDE: Visual Studio ----------
+.vs/
+*.suo
+*.user
+*.rsuser
+*.userosscache
+*.sln.docstates
+
+# ---------- IDE: Rider / ReSharper ----------
+.idea/
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+*.sln.iml
+
+# ---------- IDE: VS Code ----------
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ---------- Debug symbols & intermediates ----------
+*.pdb
+*.ilk
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+
+# ---------- Local-only tooling ----------
+global.json.user
+*.local.json
+
+# ---------- OS ----------
 .DS_Store
 Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.stackdump

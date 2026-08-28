@@ -2,9 +2,9 @@ namespace CS2.Translator.Core.Enums;
 
 public enum ChatType
 {
+    Unknown,
     All,
     Team,
-    Global,
     Dead,
     Spectator
 }
