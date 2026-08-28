@@ -1,162 +1,159 @@
-using System.Diagnostics;
-using System.Text.RegularExpressions;
+using System.Threading.Channels;
+using CS2.Translator.Core.Config;
 using CS2.Translator.Core.Enums;
 using CS2.Translator.Core.Exceptions;
-using CS2.Translator.Core.Models;
 using CS2.Translator.Core.Helper;
+using CS2.Translator.Core.Models;
+using CS2.Translator.Core.Parsing;
 
 namespace CS2.Translator.Core.Services;
 
-public sealed class LogsService
+/// <summary>
+/// Tails the CS2 console.log, turns appended lines into <see cref="Chat"/> entries and
+/// hands them to the translator. Reads are positional and serialised; translation happens
+/// on a background queue so a slow or throttled provider never stalls the log reader.
+/// </summary>
+public sealed class LogsService : IDisposable
 {
-    public event Action<Chat>? ChatReceived;
-    public event Action? ChatsUpdated;
+    /// <summary>How much of the tail to show as backlog when the app starts.</summary>
+    private const int BacklogWindowBytes = 64 * 1024;
 
-    private readonly LinkedList<Log> _logs = new();
-    public List<Chat> Chats { get; } = new();
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly string _logFilePath;
+    private readonly string _logDirectory;
     private readonly TranslatorService _translator;
     private readonly string _targetLanguage;
     private readonly string _playerName;
     private readonly bool _autoTranslate;
+    private readonly bool _translateHistoryOnStartup;
+    private readonly int _maxChats;
+    private readonly Action<Action> _post;
+
+    private readonly List<Chat> _chats = new();
+    private readonly object _chatsLock = new();
+
+    private readonly SemaphoreSlim _readGate = new(1, 1);
+    private readonly Channel<Chat> _queue = Channel.CreateUnbounded<Chat>(
+        new UnboundedChannelOptions { SingleReader = true });
+
+    private readonly CancellationTokenSource _lifetime = new();
 
     private FileSystemWatcher? _watcher;
     private Timer? _pollTimer;
+    private Task? _translationLoop;
     private CancellationTokenSource? _debounceCts;
-    private long _lastFilePosition = 0;
+
+    private long _lastFilePosition;
     private DateTime _lastWriteTimeUtc = DateTime.MinValue;
-    
-    // measuring intervals 
-    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(1);
+    private bool _disposed;
 
-    private static void DebugLog(string msg, string tag = "LogsService")
-    {
-        string formatted = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{tag}] | {msg}";
-        DebugLogger.Log(formatted);
-    }
-    
+    /// <summary>Raised on the dispatcher thread for every chat entry, before it is translated.</summary>
+    public event Action<Chat>? ChatReceived;
+
+    /// <summary>Raised on the dispatcher thread when the backlog is rebuilt and the list should be replaced.</summary>
+    public event Action? ChatsReset;
+
     public LogsService(
-        string cs2InstallationPath,
+        AppConfig config,
         TranslatorService translator,
-        string targetLanguage,
-        string playerName,
-        bool autoTranslate = true)
+        Action<Action>? post = null)
     {
-        if (string.IsNullOrWhiteSpace(cs2InstallationPath))
-            throw new ArgumentException("CS2 path is empty");
+        ArgumentNullException.ThrowIfNull(config);
 
-        _logFilePath = Path.Combine(cs2InstallationPath, "game", "csgo", "console.log");
-        _translator = translator;
-        _targetLanguage = targetLanguage;
-        _playerName = playerName?.Trim() ?? "";
-        _autoTranslate = autoTranslate;
+        if (string.IsNullOrWhiteSpace(config.InstallationPath))
+            throw new ArgumentException("CS2 installation path is empty", nameof(config));
 
-        DebugLog("Initialized service");
-        DebugLog($"Log file path: {_logFilePath}");
-        DebugLog($"PlayerName='{_playerName}', AutoTranslate={_autoTranslate}, TargetLanguage='{_targetLanguage}'");
-    }
-    
-    public async Task LoadLogsAsync(int amount)
-    {
-        var sw = Stopwatch.StartNew();
-        DebugLog($"[LOAD] Starting LoadLogsAsync(amount={amount})...");
+        _translator = translator ?? throw new ArgumentNullException(nameof(translator));
+        _logFilePath = config.ConsoleLogPath;
+        _logDirectory = Path.GetDirectoryName(_logFilePath)
+                        ?? throw new ArgumentException("CS2 installation path is not a valid directory", nameof(config));
 
-        var lines = await ReadNewLinesAsync();
-        DebugLog($"[LOAD] Read {lines.Count} lines in {sw.ElapsedMilliseconds}ms");
+        _targetLanguage = config.Language;
+        _playerName = config.PlayerName;
+        _autoTranslate = config.AutoTranslate;
+        _translateHistoryOnStartup = config.TranslateHistoryOnStartup;
+        _maxChats = config.MaxChats;
 
-        if (lines.Count == 0)
-        {
-            DebugLog("[LOAD] No new lines found");
-            return;
-        }
+        // Runs continuations on the UI thread when the host supplies a dispatcher.
+        _post = post ?? (action => action());
 
-        var parsed = ParseLines(lines);
-        DebugLog($"[PARSE] Parsed {parsed.Count} potential chat lines");
-
-        var newLogs = GetNewLogs(parsed);
-        DebugLog($"[FILTER] Found {newLogs.Count} new chat entries");
-
-        foreach (var log in newLogs)
-        {
-            try
-            {
-                await SaveLogAsync(log);
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.LogException(ex, "SaveLogAsync");
-            }
-        }
-
-        DebugLog($"[LOAD] Completed LoadLogsAsync in {sw.ElapsedMilliseconds}ms");
+        DebugLogger.Log($"Watching {_logFilePath} (lang={_targetLanguage}, player='{_playerName}', autoTranslate={_autoTranslate})", "Logs");
     }
 
-    public void StartWatching(int loadAmount = 20)
-    {
-        if (_watcher != null)
-        {
-            DebugLog("[WATCHER] Already running");
-            return;
-        }
+    public string LogFilePath => _logFilePath;
 
-        if (!File.Exists(_logFilePath))
+    public IReadOnlyList<Chat> Chats
+    {
+        get
+        {
+            lock (_chatsLock)
+                return _chats.ToArray();
+        }
+    }
+
+    /// <summary>True once the console.log exists. False means CS2 has not written it yet.</summary>
+    public bool LogFileExists => File.Exists(_logFilePath);
+
+    /// <summary>
+    /// Seeds the backlog from the tail of the file, then starts watching for appended lines.
+    /// Throws only when the installation path itself is wrong - a missing console.log is
+    /// expected before CS2 has run with -condebug, and is picked up by the poll timer.
+    /// </summary>
+    public async Task StartAsync()
+    {
+        if (!Directory.Exists(_logDirectory))
             throw new LogfileNotFoundException();
 
-        var dir = Path.GetDirectoryName(_logFilePath)!;
-        var file = Path.GetFileName(_logFilePath);
-        DebugLog($"[WATCHER] Monitoring '{dir}/{file}'");
+        _translationLoop ??= Task.Run(() => TranslationLoopAsync(_lifetime.Token));
 
-        _watcher = new FileSystemWatcher(dir, file)
+        await SeedBacklogAsync().ConfigureAwait(false);
+
+        StartWatching();
+    }
+
+    /// <summary>Rebuilds the visible list from the tail of the file without re-translating it.</summary>
+    public Task ReloadAsync() => SeedBacklogAsync();
+
+    private void StartWatching()
+    {
+        if (_watcher is not null)
+            return;
+
+        _watcher = new FileSystemWatcher(_logDirectory, Path.GetFileName(_logFilePath))
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
         };
 
-        _watcher.Changed += OnLogFileChanged;
-        _watcher.Created += OnLogFileReset;
-        _watcher.Renamed += OnLogFileReset;
-        _watcher.Deleted += OnLogFileReset;
+        _watcher.Changed += (_, _) => RequestReload();
+        _watcher.Created += (_, _) => RequestReset();
+        _watcher.Renamed += (_, _) => RequestReset();
+        _watcher.Deleted += (_, _) => RequestReset();
+        _watcher.Error += (_, e) => DebugLogger.LogException(e.GetException(), "FileSystemWatcher");
         _watcher.EnableRaisingEvents = true;
 
-        _pollTimer = new Timer(async _ => await PollLogFileAsync(), null,
-            _pollInterval, _pollInterval);
+        // The watcher misses writes on some setups (network shares, Proton, buffered writers),
+        // so a cheap poll backs it up.
+        _pollTimer = new Timer(_ => PollLogFile(), null, PollInterval, PollInterval);
 
-        DebugLog($"[WATCHER] Started successfully with polling every {_pollInterval.TotalSeconds}s");
-    }
-    
-    private async void OnLogFileChanged(object? sender, FileSystemEventArgs e)
-    {
-        DebugLog($"[WATCHER] File changed event triggered - {e.ChangeType}");
-        await DebouncedReload(20);
-    }
-
-    private async void OnLogFileReset(object? sender, FileSystemEventArgs e)
-    {
-        DebugLog($"[WATCHER] Logfile recreated or renamed ({e.ChangeType}) - resetting state");
-
-        _lastFilePosition = 0;
-        _lastWriteTimeUtc = DateTime.MinValue;
-        _logs.Clear();
-        Chats.Clear();
-
-        await DebouncedReload(20);
+        DebugLogger.Log("Watcher and poll timer started", "Logs");
     }
 
     public void StopWatching()
     {
-        DebugLog("[WATCHER] Stopping file watcher");
-
         _watcher?.Dispose();
-        _pollTimer?.Dispose();
         _watcher = null;
-        _pollTimer = null;
-        _debounceCts?.Cancel();
-        _debounceCts = null;
 
-        DebugLog("[WATCHER] Stopped successfully");
+        _pollTimer?.Dispose();
+        _pollTimer = null;
+
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        _debounceCts = null;
     }
 
-    private async Task PollLogFileAsync()
+    private void PollLogFile()
     {
         try
         {
@@ -167,188 +164,303 @@ public sealed class LogsService
 
             if (info.Length < _lastFilePosition)
             {
-                DebugLog($"[POLL] Detected file truncation - resetting position");
-                _lastFilePosition = 0;
-                _lastWriteTimeUtc = DateTime.MinValue;
-                _logs.Clear();
-                Chats.Clear();
-                await DebouncedReload(20);
+                DebugLogger.Log("File shrank - treating as a new match log", "Logs");
+                RequestReset();
                 return;
             }
 
             if (info.Length > _lastFilePosition || info.LastWriteTimeUtc != _lastWriteTimeUtc)
-            {
-                DebugLog("[POLL] Detected potential update - reloading");
-                await DebouncedReload(10);
-            }
+                RequestReload();
         }
         catch (Exception ex)
         {
-            DebugLogger.LogException(ex, "PollLogFileAsync");
+            DebugLogger.LogException(ex, "PollLogFile");
         }
     }
 
-    // Core
-    private async Task SaveLogAsync(Log log)
+    private void RequestReload() => _ = DebouncedAsync(ReadNewLinesAsync);
+
+    private void RequestReset() => _ = DebouncedAsync(SeedBacklogAsync);
+
+    private async Task DebouncedAsync(Func<Task> work)
     {
-        DebugLog($"[SAVE] Processing new log entry: {log.RawString}");
+        var cts = new CancellationTokenSource();
 
-        _logs.AddLast(log);
-
-        if (log is not Chat chat)
-            return;
-
-        Chats.Insert(0, chat);
-        DebugLog($"[CHAT] Added new chat from '{chat.Name}' - {chat.Message}");
-
-        if (_autoTranslate && !string.IsNullOrWhiteSpace(chat.Message))
-        {
-            if (!string.IsNullOrEmpty(_playerName) &&
-                chat.Name.Equals(_playerName, StringComparison.OrdinalIgnoreCase))
-            {
-                DebugLog("[TRANSLATE] Own message detected - skipping translation");
-                chat.Translation = new Translation(_targetLanguage, chat.Message);
-            }
-            else
-            {
-                try
-                {
-                    DebugLog("[TRANSLATE] Translating message...");
-                    var sw = Stopwatch.StartNew();
-                    chat.Translation = await _translator.TranslateAsync(chat.Message, _targetLanguage);
-                    sw.Stop();
-                    DebugLog($"[TRANSLATE] Translation finished in {sw.ElapsedMilliseconds}ms - {chat.Translation?.Text}");
-                }
-                catch (TranslatorException ex)
-                {
-                    DebugLog($"[TRANSLATE] Translation failed: {ex.Message}");
-                    chat.Translation = new Translation(_targetLanguage, $"[error] {ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    DebugLogger.LogException(ex, "Translator general failure");
-                }
-            }
-        }
-
-        DebugLog("[EVENT] Raising ChatReceived & ChatsUpdated");
-        ChatReceived?.Invoke(chat);
-        ChatsUpdated?.Invoke();
-    }
-
-    private async Task DebouncedReload(int loadAmount)
-    {
-        _debounceCts?.Cancel();
-        _debounceCts = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _debounceCts, cts);
+        previous?.Cancel();
+        previous?.Dispose();
 
         try
         {
-            await Task.Delay(250, _debounceCts.Token);
-            DebugLog("[DEBOUNCE] Delay passed - reloading logs");
-            await LoadLogsAsync(loadAmount);
+            await Task.Delay(DebounceDelay, cts.Token).ConfigureAwait(false);
+            await work().ConfigureAwait(false);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
-            DebugLog("[DEBOUNCE] Canceled due to new event");
+            // Superseded by a newer event.
         }
         catch (Exception ex)
         {
-            DebugLogger.LogException(ex, "DebouncedReload");
+            DebugLogger.LogException(ex, "DebouncedAsync");
         }
     }
-    
-    // PARSING
-    private static List<Chat> ParseLines(IEnumerable<string> lines)
+
+    /// <summary>
+    /// Replaces the visible list with what the tail of the file holds, and parks the read
+    /// position at EOF. Backlog entries are not queued for translation unless the user asked
+    /// for it - console.log accumulates across sessions, and translating all of it on startup
+    /// is what used to trip the rate limit within seconds.
+    /// </summary>
+    private async Task SeedBacklogAsync()
     {
-        var chats = new List<Chat>();
-        foreach (var line in lines)
+        await _readGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+        try
         {
-            if (!Regex.IsMatch(line, @"\s\s\[\w+\]") && !line.Contains("﹫"))
-                continue;
+            List<string> lines;
 
-            var split = line.Split([": "], 2, StringSplitOptions.None);
-            if (split.Length < 2)
-                continue;
-
-            var namePart = Regex.Replace(split[0], @"\d{1,2}/\d{1,2} \d{1,2}:\d{1,2}:\d{1,2}", "");
-            namePart = Regex.Replace(namePart, @"\[\w+\]", "");
-            namePart = Regex.Replace(namePart, @"﹫\w+", "").Trim();
-            var messagePart = split[1].Trim();
-
-            chats.Add(new Chat(line, ChatType.All, namePart, messagePart));
-        }
-
-        return chats;
-    }
-
-    private List<Log> GetNewLogs(List<Chat> parsed)
-    {
-        var result = new List<Log>();
-        for (var i = parsed.Count - 1; i >= 0; i--)
-        {
-            if (_logs.Last == null)
+            try
             {
-                result.Insert(0, parsed[i]);
-                continue;
+                lines = await Task.Run(ReadTailWindow, _lifetime.Token).ConfigureAwait(false);
+            }
+            catch (FileNotFoundException)
+            {
+                lines = new List<string>();
             }
 
-            if (!Compare(_logs.Last, parsed[i]))
-                result.Insert(0, parsed[i]);
-            else
-                break;
+            var parsed = ChatLineParser.ParseLines(lines);
+            if (parsed.Count > _maxChats)
+                parsed = parsed.GetRange(parsed.Count - _maxChats, _maxChats);
+
+            foreach (var chat in parsed)
+            {
+                chat.IsOwnMessage = IsOwnMessage(chat.Name);
+                chat.State = _translateHistoryOnStartup && ShouldTranslate(chat)
+                    ? TranslationState.Pending
+                    : TranslationState.Skipped;
+            }
+
+            lock (_chatsLock)
+            {
+                _chats.Clear();
+                // Newest first, matching how the list is displayed.
+                for (var i = parsed.Count - 1; i >= 0; i--)
+                    _chats.Add(parsed[i]);
+            }
+
+            _post(() => ChatsReset?.Invoke());
+
+            if (_translateHistoryOnStartup)
+            {
+                foreach (var chat in parsed.Where(c => c.State == TranslationState.Pending))
+                    _queue.Writer.TryWrite(chat);
+            }
+
+            DebugLogger.Log($"Backlog seeded with {parsed.Count} entries, reading from offset {_lastFilePosition}", "Logs");
         }
-
-        return result;
-    }
-
-    private static bool Compare(LinkedListNode<Log> last, Log current)
-    {
-        var node = last;
-        if (node.Value.RawString != current.RawString)
-            return false;
-
-        for (var i = 0; i < 3; i++)
+        finally
         {
-            node = node.Previous;
-            if (node == null)
-                return true;
-            if (node.Value.RawString != current.RawString)
-                return false;
+            _readGate.Release();
         }
-
-        return true;
     }
-    
-    // FILE IO
-    private async Task<List<string>> ReadNewLinesAsync()
+
+    private async Task ReadNewLinesAsync()
+    {
+        await _readGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+        try
+        {
+            List<string> lines;
+
+            try
+            {
+                lines = await Task.Run(ReadAppendedLines, _lifetime.Token).ConfigureAwait(false);
+            }
+            catch (FileNotFoundException)
+            {
+                return;
+            }
+
+            if (lines.Count == 0)
+                return;
+
+            var parsed = ChatLineParser.ParseLines(lines);
+            if (parsed.Count == 0)
+                return;
+
+            foreach (var chat in parsed)
+            {
+                chat.IsOwnMessage = IsOwnMessage(chat.Name);
+
+                if (ShouldTranslate(chat))
+                {
+                    chat.State = TranslationState.Pending;
+                    _queue.Writer.TryWrite(chat);
+                }
+                else
+                {
+                    chat.State = TranslationState.Skipped;
+                }
+
+                lock (_chatsLock)
+                {
+                    _chats.Insert(0, chat);
+                    TrimLocked();
+                }
+
+                // Surface the message immediately. The translation lands later via
+                // property change notification, so a slow provider never delays display.
+                var captured = chat;
+                _post(() => ChatReceived?.Invoke(captured));
+            }
+        }
+        finally
+        {
+            _readGate.Release();
+        }
+    }
+
+    private void TrimLocked()
+    {
+        // Oldest entries live at the end of the list.
+        while (_chats.Count > _maxChats)
+            _chats.RemoveAt(_chats.Count - 1);
+    }
+
+    private bool IsOwnMessage(string name) =>
+        !string.IsNullOrEmpty(_playerName)
+        && name.Equals(_playerName, StringComparison.OrdinalIgnoreCase);
+
+    private bool ShouldTranslate(Chat chat) =>
+        _autoTranslate
+        && !chat.IsOwnMessage
+        && TranslatorService.IsTranslatable(chat.Message);
+
+    private async Task TranslationLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var chat in _queue.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                Translation translation;
+                TranslationState state;
+
+                try
+                {
+                    translation = await _translator.TranslateAsync(chat.Message, _targetLanguage, ct).ConfigureAwait(false);
+                    state = TranslationState.Translated;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (TranslatorException ex)
+                {
+                    translation = new Translation(_targetLanguage, ex.Message);
+                    state = TranslationState.Failed;
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.LogException(ex, "TranslationLoop");
+                    translation = new Translation(_targetLanguage, "Translation failed");
+                    state = TranslationState.Failed;
+                }
+
+                var captured = chat;
+                _post(() => captured.Complete(translation, state));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutting down.
+        }
+        catch (Exception ex)
+        {
+            DebugLogger.LogException(ex, "TranslationLoopAsync");
+        }
+    }
+
+    /// <summary>Reads the last <see cref="BacklogWindowBytes"/> of the file and parks the offset at EOF.</summary>
+    private List<string> ReadTailWindow()
     {
         var result = new List<string>();
+
         if (!File.Exists(_logFilePath))
-            throw new LogfileNotFoundException();
-
-        await Task.Run(() =>
         {
-            using var fs = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            if (fs.Length < _lastFilePosition)
-            {
-                DebugLog("[FILE] Truncated - resetting offset");
-                _lastFilePosition = 0;
-                _lastWriteTimeUtc = DateTime.MinValue;
-                _logs.Clear();
-                Chats.Clear();
-            }
+            _lastFilePosition = 0;
+            _lastWriteTimeUtc = DateTime.MinValue;
+            throw new FileNotFoundException("console.log not found", _logFilePath);
+        }
 
-            fs.Seek(_lastFilePosition, SeekOrigin.Begin);
-            using var sr = new StreamReader(fs);
+        using var fs = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
 
-            while (sr.ReadLine() is { } line)
-                result.Add(line);
+        var start = Math.Max(0, fs.Length - BacklogWindowBytes);
+        fs.Seek(start, SeekOrigin.Begin);
 
-            _lastFilePosition = fs.Position;
-            _lastWriteTimeUtc = File.GetLastWriteTimeUtc(_logFilePath);
-        });
+        using var reader = new StreamReader(fs);
 
-        DebugLog($"[FILE] Read {result.Count} new lines (offset={_lastFilePosition})");
+        // A mid-file seek almost certainly lands inside a line; drop that fragment.
+        if (start > 0)
+            reader.ReadLine();
+
+        while (reader.ReadLine() is { } line)
+            result.Add(line);
+
+        _lastFilePosition = fs.Length;
+        _lastWriteTimeUtc = File.GetLastWriteTimeUtc(_logFilePath);
+
         return result;
+    }
+
+    private List<string> ReadAppendedLines()
+    {
+        var result = new List<string>();
+
+        if (!File.Exists(_logFilePath))
+            throw new FileNotFoundException("console.log not found", _logFilePath);
+
+        using var fs = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+        if (fs.Length < _lastFilePosition)
+        {
+            // Truncated or replaced between poll and read.
+            _lastFilePosition = 0;
+        }
+
+        fs.Seek(_lastFilePosition, SeekOrigin.Begin);
+
+        using var reader = new StreamReader(fs);
+        while (reader.ReadLine() is { } line)
+            result.Add(line);
+
+        _lastFilePosition = fs.Length;
+        _lastWriteTimeUtc = File.GetLastWriteTimeUtc(_logFilePath);
+
+        return result;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        StopWatching();
+
+        _queue.Writer.TryComplete();
+        _lifetime.Cancel();
+
+        try
+        {
+            _translationLoop?.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception ex)
+        {
+            DebugLogger.LogException(ex, "LogsService.Dispose");
+        }
+
+        _lifetime.Dispose();
+        _readGate.Dispose();
+
+        DebugLogger.Log("Stopped", "Logs");
     }
 }
