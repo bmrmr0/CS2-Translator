@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using CS2.Translator.Core.Enums;
 using CS2.Translator.Core.Models;
@@ -70,11 +71,16 @@ public static partial class ChatLineParser
         if (message.Length == 0)
             return false;
 
-        var name = CleanName(rawName);
+        // CS2 writes "NAME<U+200E>﹫LOCATION: message", so everything from the marker
+        // onwards is the player's position on the map, not part of their name.
+        var markerIndex = rawName.IndexOf(ClanTagMarker);
+        var namePart = markerIndex >= 0 ? rawName[..markerIndex] : rawName;
+
+        var name = CleanName(namePart);
         if (name.Length == 0)
             return false;
 
-        chat = new Chat(line, DetectChatType(rawName), name, message);
+        chat = new Chat(line, DetectChatType(namePart), name, message);
         return true;
     }
 
@@ -129,14 +135,28 @@ public static partial class ChatLineParser
         return ChatType.Unknown;
     }
 
-    private static string CleanName(string rawName)
+    private static string CleanName(string namePart)
     {
-        var name = Timestamp().Replace(rawName, "");
+        var name = Timestamp().Replace(namePart, "");
         name = DeadPrefix().Replace(name, "");
         name = TeamPrefix().Replace(name, "");
         name = BracketTag().Replace(name, "");
         name = ClanTag().Replace(name, "");
+        name = RemoveFormatCharacters(name);
 
         return Whitespace().Replace(name, " ").Trim();
+    }
+
+    /// <summary>
+    /// Drops invisible formatting characters. CS2 puts a U+200E left-to-right mark
+    /// between the player name and the marker, which would otherwise survive into the name.
+    /// </summary>
+    private static string RemoveFormatCharacters(string text)
+    {
+        if (!text.Any(c => CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format))
+            return text;
+
+        return string.Concat(
+            text.Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.Format));
     }
 }

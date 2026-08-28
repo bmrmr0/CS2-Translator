@@ -148,9 +148,8 @@ public sealed class LogsService : IDisposable
         _pollTimer?.Dispose();
         _pollTimer = null;
 
-        _debounceCts?.Cancel();
-        _debounceCts?.Dispose();
-        _debounceCts = null;
+        // Cancel only - the debounce task that owns this source disposes it itself.
+        TryCancel(Interlocked.Exchange(ref _debounceCts, null));
     }
 
     private void PollLogFile()
@@ -186,13 +185,19 @@ public sealed class LogsService : IDisposable
     {
         var cts = new CancellationTokenSource();
 
+        // Capture the token before publishing the source, so it is always valid here
+        // even if another event supersedes us immediately.
+        var token = cts.Token;
+
+        // Each invocation owns its own source and disposes it in the finally below.
+        // Cancelling the previous one is safe; disposing it here is not, because its
+        // task may not have reached the delay yet.
         var previous = Interlocked.Exchange(ref _debounceCts, cts);
-        previous?.Cancel();
-        previous?.Dispose();
+        TryCancel(previous);
 
         try
         {
-            await Task.Delay(DebounceDelay, cts.Token).ConfigureAwait(false);
+            await Task.Delay(DebounceDelay, token).ConfigureAwait(false);
             await work().ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -205,9 +210,20 @@ public sealed class LogsService : IDisposable
         }
         finally
         {
-            // Only dispose if a later event has not already taken our place.
-            if (ReferenceEquals(Interlocked.CompareExchange(ref _debounceCts, null, cts), cts))
-                cts.Dispose();
+            Interlocked.CompareExchange(ref _debounceCts, null, cts);
+            cts.Dispose();
+        }
+    }
+
+    private static void TryCancel(CancellationTokenSource? cts)
+    {
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Its own task already finished and disposed it.
         }
     }
 
@@ -289,6 +305,10 @@ public sealed class LogsService : IDisposable
                 return;
 
             var parsed = ChatLineParser.ParseLines(lines);
+
+            if (DebugLogger.Enabled)
+                DebugLogger.Log($"Read {lines.Count} new lines, {parsed.Count} of them chat", "Logs");
+
             if (parsed.Count == 0)
                 return;
 
@@ -296,15 +316,18 @@ public sealed class LogsService : IDisposable
             {
                 chat.IsOwnMessage = IsOwnMessage(chat.Name);
 
-                if (ShouldTranslate(chat))
-                {
-                    chat.State = TranslationState.Pending;
+                var willTranslate = ShouldTranslate(chat);
+                chat.State = willTranslate ? TranslationState.Pending : TranslationState.Skipped;
+
+                // Logged before queueing: once queued the translation can complete
+                // immediately, which would make the state read here misleading.
+                if (DebugLogger.Enabled)
+                    DebugLogger.Log(
+                        $"[{chat.ChatType}] {chat.Name}: {chat.Message} ({(willTranslate ? "queued" : "skipped")})",
+                        "Chat");
+
+                if (willTranslate)
                     _queue.Writer.TryWrite(chat);
-                }
-                else
-                {
-                    chat.State = TranslationState.Skipped;
-                }
 
                 lock (_chatsLock)
                 {
@@ -353,6 +376,9 @@ public sealed class LogsService : IDisposable
                 {
                     translation = await _translator.TranslateAsync(chat.Message, _targetLanguage, ct).ConfigureAwait(false);
                     state = TranslationState.Translated;
+
+                    if (DebugLogger.Enabled)
+                        DebugLogger.Log($"'{chat.Message}' -> '{translation.Text}'", "Translate");
                 }
                 catch (OperationCanceledException)
                 {

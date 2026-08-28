@@ -12,7 +12,8 @@ public partial class MainView : UserControl
 {
     private MainViewModel? _subscribed;
 
-    private MainView()
+    /// <summary>Parameterless constructor for the XAML loader and the previewer.</summary>
+    public MainView()
     {
         InitializeComponent();
 

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CS2.Translator.Core.Config;
 
 public class AppConfig
@@ -56,7 +58,8 @@ public class AppConfig
         return Math.Clamp(Math.Round(value), MinFontSize, MaxFontSize);
     }
 
-    /// <summary>Full path to the console.log that <c>-condebug</c> writes.</summary>
+    /// <summary>Full path to the console.log that <c>-condebug</c> writes. Derived, so it is not persisted.</summary>
+    [JsonIgnore]
     public string ConsoleLogPath => ResolveConsoleLogPath(InstallationPath);
 
     public static string ResolveConsoleLogPath(string installationPath) =>

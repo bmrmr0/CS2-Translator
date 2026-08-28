@@ -8,10 +8,14 @@ namespace CS2.Translator.UI.Views;
 
 public partial class SettingsWindow : Window
 {
-    public SettingsWindow(SettingsViewModel vm)
+    /// <summary>Parameterless constructor for the XAML loader and the previewer.</summary>
+    public SettingsWindow()
     {
         InitializeComponent();
+    }
 
+    public SettingsWindow(SettingsViewModel vm) : this()
+    {
         DataContext = vm;
         vm.PickFolderAsync = PickFolderAsync;
         vm.CloseRequested += Close;

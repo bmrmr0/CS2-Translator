@@ -102,6 +102,65 @@ public class ChatLineParserTests
         Assert.Equal("Second", chats[1].Name);
     }
 
+    // The lines below are the shape CS2 actually writes with -condebug:
+    //   "MM/DD HH:MM:SS  [T] NAME<U+200E>﹫LOCATION: message"
+    // The location often contains spaces, and the name is followed by an invisible
+    // left-to-right mark.
+    private const string Ltr = "‎";
+
+    [Fact]
+    public void Parses_a_real_cs2_team_chat_line()
+    {
+        var line = $"08/28 21:30:03  [T] bmrmr{Ltr}{Marker}T Start: xaxaxaxaxa";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("bmrmr", chat.Name);
+        Assert.Equal("xaxaxaxaxa", chat.Message);
+        Assert.Equal(ChatType.Team, chat.ChatType);
+    }
+
+    [Theory]
+    [InlineData("T Start")]
+    [InlineData("Back Way")]
+    [InlineData("Bombsite B")]
+    [InlineData("CT Start")]
+    [InlineData("Garage")]
+    public void Does_not_treat_the_map_location_as_part_of_the_name(string location)
+    {
+        var line = $"08/28 22:43:07  [CT] SPRINT{Ltr}{Marker}{location}: hello";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("SPRINT", chat.Name);
+        Assert.Equal("hello", chat.Message);
+    }
+
+    [Fact]
+    public void Strips_the_invisible_left_to_right_mark_from_the_name()
+    {
+        var line = $"08/29 00:51:08  [CT] xenoformm{Ltr}{Marker}CT Start: TAKTIM ayaz";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("xenoformm", chat.Name);
+
+        // Ordinal on purpose: a culture-sensitive search treats U+200E as zero-weight
+        // and reports it as present in any string.
+        Assert.False(chat.Name.Contains('‎'));
+    }
+
+    [Fact]
+    public void Handles_non_latin_player_names()
+    {
+        var line = $"08/28 23:27:40  [CT] 當隱在清晨醒來時，大{Ltr}{Marker}Bombsite B: why";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("當隱在清晨醒來時，大", chat.Name);
+        Assert.Equal("why", chat.Message);
+    }
+
     [Fact]
     public void Collapses_whitespace_in_names()
     {
