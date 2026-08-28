@@ -197,11 +197,17 @@ public sealed class LogsService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            // Superseded by a newer event.
+            // Superseded by a newer event, or shutting down.
         }
         catch (Exception ex)
         {
             DebugLogger.LogException(ex, "DebouncedAsync");
+        }
+        finally
+        {
+            // Only dispose if a later event has not already taken our place.
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _debounceCts, null, cts), cts))
+                cts.Dispose();
         }
     }
 
