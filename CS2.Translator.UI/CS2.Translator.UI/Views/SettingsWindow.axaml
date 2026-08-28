@@ -61,7 +61,7 @@
 
                     <TextBlock Classes="label" Text="Translate into"/>
                     <AutoCompleteBox
-                        Text="{Binding Language}"
+                        Text="{Binding Language, Mode=TwoWay}"
                         ItemsSource="{Binding CommonLanguages}"
                         FilterMode="StartsWith"
                         MinimumPrefixLength="0"/>
