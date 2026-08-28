@@ -1,35 +1,44 @@
-﻿using Avalonia;
-using Avalonia.ReactiveUI;
 using System;
 using System.Linq;
+using Avalonia;
 using CS2.Translator.Core.Helper;
 
 namespace CS2.Translator.UI.Desktop;
 
-class Program
+internal static class Program
 {
     [STAThread]
     public static void Main(string[] args)
     {
-        bool enableDebug = args.Contains("-debug", StringComparer.OrdinalIgnoreCase);
-        
+        var enableDebug = args.Contains("-debug", StringComparer.OrdinalIgnoreCase);
+
         DebugLogger.Initialize(enableDebug);
-        
         DebugLogger.Log("===============================================");
         DebugLogger.Log("CS2.Translator started");
-        DebugLogger.Log($"OS: {Environment.OSVersion}");
+        DebugLogger.Log($"OS: {Environment.OSVersion} ({DebugLogger.GetPlatformName()})");
         DebugLogger.Log($".NET Runtime: {Environment.Version}");
-        DebugLogger.Log($"Debug Mode: {(enableDebug ? "ON" : "OFF")}");
+        DebugLogger.Log($"Data folder: {AppPaths.BaseDirectory}");
         DebugLogger.Log("===============================================");
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+                DebugLogger.LogException(ex, "AppDomain.UnhandledException");
+        };
+
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            DebugLogger.LogException(e.Exception, "UnobservedTaskException");
+            e.SetObserved();
+        };
 
         try
         {
-            BuildAvaloniaApp()
-                .StartWithClassicDesktopLifetime(args);
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         catch (Exception ex)
         {
-            DebugLogger.LogException(ex, "Unhandled exception in Main()");
+            DebugLogger.LogException(ex, "Unhandled exception in Main");
             throw;
         }
         finally
@@ -38,9 +47,10 @@ class Program
         }
     }
 
-    private static AppBuilder BuildAvaloniaApp()
+    // Referenced by the Avalonia previewer, so it must stay public.
+    public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
-            .UseReactiveUI()
+            .WithInterFont()
             .LogToTrace();
 }

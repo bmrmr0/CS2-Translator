@@ -1,107 +1,82 @@
 using System;
 using System.Collections.Specialized;
-using System.ComponentModel;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
-using CS2.Translator.UI.ViewModels;
 using CS2.Translator.Core.Helper;
+using CS2.Translator.UI.ViewModels;
 
 namespace CS2.Translator.UI.Views;
 
 public partial class MainView : UserControl
 {
+    private MainViewModel? _subscribed;
+
     private MainView()
     {
         InitializeComponent();
+
         Loaded += OnLoaded;
-        DebugLog("MainView constructor initialized");
+        Unloaded += OnUnloaded;
+        DataContextChanged += OnDataContextChanged;
     }
+
     public MainView(MainViewModel vm) : this()
     {
         DataContext = vm;
-        DebugLog("MainView initialized with ViewModel");
-    }
-    private static void DebugLog(string msg)
-    {
-        string formatted = $"[MainView] | {msg}";
-        Console.WriteLine(formatted);
-        DebugLogger.Log(formatted);
     }
 
-    private void OnLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnLoaded(object? sender, RoutedEventArgs e) => Subscribe();
+
+    private void OnUnloaded(object? sender, RoutedEventArgs e) => Unsubscribe();
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        try
+        Unsubscribe();
+
+        if (IsLoaded)
+            Subscribe();
+    }
+
+    private void Subscribe()
+    {
+        if (DataContext is not MainViewModel vm || ReferenceEquals(vm, _subscribed))
+            return;
+
+        Unsubscribe();
+
+        vm.Chats.CollectionChanged += OnChatsChanged;
+        _subscribed = vm;
+    }
+
+    private void Unsubscribe()
+    {
+        if (_subscribed is null)
+            return;
+
+        _subscribed.Chats.CollectionChanged -= OnChatsChanged;
+        _subscribed = null;
+    }
+
+    private void OnChatsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action != NotifyCollectionChangedAction.Add &&
+            e.Action != NotifyCollectionChangedAction.Reset)
         {
-            DebugLog("MainView loaded event triggered");
+            return;
+        }
 
-            if (DataContext is not MainViewModel vm)
+        // Newest messages are inserted at the top, so keep the view pinned there.
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
             {
-                DebugLog("DataContext is not MainViewModel → no binding");
-                return;
+                ChatScrollViewer.ScrollToHome();
             }
-
-            vm.Chats.CollectionChanged += Chats_CollectionChanged;
-            vm.PropertyChanged += Vm_PropertyChanged;
-            DebugLog("Subscribed to Chats.CollectionChanged event");
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "OnLoaded");
-        }
-    }
-
-    private void Vm_PropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        try
-        {
-            if (e.PropertyName == nameof(MainViewModel.NameFontSize) ||
-                e.PropertyName == nameof(MainViewModel.TranslationFontSize))
+            catch (Exception ex)
             {
-                DebugLog($"Font size changed → {e.PropertyName}");
-
-                Dispatcher.UIThread.Post(() =>
-                {
-                    try
-                    {
-                        // force UI refresh
-                        InvalidateVisual();
-                        DebugLog("UI invalidated due to font size change");
-                    }
-                    catch (Exception ex)
-                    {
-                        DebugLogger.LogException(ex, "InvalidateVisual");
-                    }
-                });
+                DebugLogger.LogException(ex, "ScrollToHome");
             }
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "Vm_PropertyChanged");
-        }
-    }
-
-    private void Chats_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        try
-        {
-            DebugLog($"Chats_CollectionChanged invoked → Action={e.Action}, NewItems={e.NewItems?.Count ?? 0}, OldItems={e.OldItems?.Count ?? 0}");
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                try
-                {
-                    ChatScrollViewer.ScrollToHome();
-                    DebugLog("ChatScrollViewer.ScrollToHome executed");
-                }
-                catch (Exception ex)
-                {
-                    DebugLogger.LogException(ex, "ScrollToHome");
-                }
-            }, DispatcherPriority.Background);
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "Chats_CollectionChanged");
-        }
+        }, DispatcherPriority.Background);
     }
 }

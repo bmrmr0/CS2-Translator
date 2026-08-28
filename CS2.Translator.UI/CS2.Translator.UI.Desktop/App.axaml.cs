@@ -1,8 +1,8 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using CS2.Translator.UI.Views;
 using Avalonia.Styling;
+using CS2.Translator.UI.Views;
 
 namespace CS2.Translator.UI.Desktop;
 
@@ -16,10 +16,11 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         RequestedThemeVariant = ThemeVariant.Dark;
-        base.OnFrameworkInitializationCompleted();
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.MainWindow = new MainWindow();
+            desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
         }
 
         base.OnFrameworkInitializationCompleted();

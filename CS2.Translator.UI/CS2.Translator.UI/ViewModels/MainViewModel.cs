@@ -1,23 +1,27 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using Avalonia.Collections;
-using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using CS2.Translator.Core.Exceptions;
+using CS2.Translator.Core.Helper;
 using CS2.Translator.Core.Models;
 using CS2.Translator.Core.Services;
-using CS2.Translator.Core.Helper;
 
 namespace CS2.Translator.UI.ViewModels;
 
-public partial class MainViewModel : ViewModelBase
+public partial class MainViewModel : ViewModelBase, IDisposable
 {
-    private const int MaxChats = 150;
-    public AvaloniaList<Chat> Chats { get; } = new();
-
-    private readonly LogsService _logsService;
+    private readonly TranslationSession _session;
     private readonly ConfigService _configService;
+
+    private bool _disposed;
+
+    /// <summary>
+    /// Holds the live Chat instances from the service. They must not be copied:
+    /// Chat raises PropertyChanged when its translation arrives, and a clone would
+    /// never receive it.
+    /// </summary>
+    public AvaloniaList<Chat> Chats { get; } = new();
 
     [ObservableProperty]
     private string _statusText = "Idle";
@@ -26,186 +30,92 @@ public partial class MainViewModel : ViewModelBase
 
     public double NameFontSize => _configService.Config.NameFontSize;
     public double TranslationFontSize => _configService.Config.TranslationFontSize;
+    public bool ShowOriginalMessage => _configService.Config.ShowOriginalMessage;
 
-    public MainViewModel(
-        LogsService logsService,
-        ConfigService configService)
+    private int MaxChats => _configService.Config.MaxChats;
+
+    public MainViewModel(TranslationSession session, ConfigService configService)
     {
-        _logsService = logsService;
+        _session = session;
         _configService = configService;
 
-        _logsService.ChatReceived += OnChatReceived;
-        
+        _session.ChatReceived += OnChatReceived;
+        _session.ChatsReset += OnChatsReset;
+        _session.StatusChanged += OnStatusChanged;
         _configService.ConfigChanged += OnConfigChanged;
 
-        DebugLog("MainViewModel initialized");
         _ = InitializeAsync();
-    }
-    
-    private static void DebugLog(string msg)
-    {
-        string formatted = $"[MainViewModel] | {msg}";
-        Console.WriteLine(formatted);
-        DebugLogger.Log(formatted);
-    }
-
-    private void OnConfigChanged()
-    {
-        try
-        {
-            DebugLog("ConfigChanged event received");
-
-            OnPropertyChanged(nameof(NameFontSize));
-            OnPropertyChanged(nameof(TranslationFontSize));
-
-            DebugLog("Font size properties updated");
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "OnConfigChanged");
-        }
     }
 
     private async Task InitializeAsync()
     {
         try
         {
-            DebugLog("InitializeAsync started");
-            StatusText = "Loading logs…";
-
-            await _logsService.LoadLogsAsync(30);
-            DebugLog("Initial logs loaded");
-
-            _logsService.StartWatching();
-            DebugLog("Log watcher started");
-
-            await Dispatcher.UIThread.InvokeAsync(FullRefresh);
-            DebugLog("UI refresh completed after initialization");
-
-            StatusText = "Watching CS2 console.log";
-            DebugLog("Status updated - Watching CS2 console.log");
-        }
-        catch (LogfileNotFoundException)
-        {
-            StatusText = "Waiting for CS2 (console.log not found)";
-            DebugLog("LogfileNotFoundException: console.log missing");
+            await _session.StartAsync();
         }
         catch (Exception ex)
         {
             StatusText = $"Error: {ex.Message}";
-            DebugLogger.LogException(ex, "InitializeAsync");
+            DebugLogger.LogException(ex, "MainViewModel.InitializeAsync");
         }
     }
+
+    // All three handlers are invoked through the dispatcher the session was given,
+    // so they are already on the UI thread.
+    private void OnStatusChanged(string status) => StatusText = status;
 
     private void OnChatReceived(Chat chat)
     {
-        try
-        {
-            DebugLog($"Chat received from '{chat.Name}': {chat.Message}");
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                try
-                {
-                    Chats.Insert(0, CloneForUi(chat));
-                    EnforceLimit();
-
-                    DebugLog($"Chat added to UI (Chats.Count={Chats.Count})");
-                }
-                catch (Exception ex)
-                {
-                    DebugLogger.LogException(ex, "UIThread Chat Add");
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "OnChatReceived");
-        }
+        Chats.Insert(0, chat);
+        Trim();
     }
 
-    private void FullRefresh()
+    private void OnChatsReset()
     {
-        try
-        {
-            DebugLog("FullRefresh() started");
-            
-            Chats.Clear();
-            foreach (var chat in _logsService.Chats)
-            {
-                Chats.Add(CloneForUi(chat));
-                EnforceLimit();
-            }
+        Chats.Clear();
+        foreach (var chat in _session.Chats)
+            Chats.Add(chat);
 
-            DebugLog($"FullRefresh() completed - total chats: {Chats.Count}");
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "FullRefresh");
-        }
+        Trim();
     }
 
-    private void EnforceLimit()
+    private void OnConfigChanged()
     {
-        try
-        {
-            while (Chats.Count > MaxChats)
-                Chats.RemoveAt(0);
+        OnPropertyChanged(nameof(NameFontSize));
+        OnPropertyChanged(nameof(TranslationFontSize));
+        OnPropertyChanged(nameof(ShowOriginalMessage));
 
-            DebugLog($"EnforceLimit() applied (Chats.Count={Chats.Count})");
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "EnforceLimit");
-        }
+        // Language, install path and player name are baked into the services,
+        // so they only take effect once those are rebuilt.
+        _ = _session.RestartAsync();
+    }
+
+    /// <summary>Newest entries sit at index 0, so the oldest are trimmed off the end.</summary>
+    private void Trim()
+    {
+        while (Chats.Count > MaxChats)
+            Chats.RemoveAt(Chats.Count - 1);
     }
 
     [RelayCommand]
-    private void OpenSettings()
-    {
-        try
-        {
-            DebugLog("OpenSettings() invoked");
-            SettingsRequested?.Invoke();
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "OpenSettings");
-        }
-    }
+    private void OpenSettings() => SettingsRequested?.Invoke();
 
     [RelayCommand]
-    private async Task Reload()
-    {
-        try
-        {
-            DebugLog("Reload command triggered");
-            StatusText = "Reloading…";
-            
-            await _logsService.LoadLogsAsync(30);
-            DebugLog("Logs reloaded");
+    private async Task Reload() => await _session.ReloadAsync();
 
-            await Dispatcher.UIThread.InvokeAsync(FullRefresh);
-            DebugLog("UI refreshed after reload");
-            StatusText = "Reloaded";
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Error during reload: {ex.Message}";
-            DebugLogger.LogException(ex, "Reload");
-        }
-    }
+    [RelayCommand]
+    private void Clear() => Chats.Clear();
 
-    private static Chat CloneForUi(Chat c)
+    public void Dispose()
     {
-        return new Chat(
-            rawString: c.RawString,
-            chatType: c.ChatType,
-            name: c.Name,
-            message: c.Message
-        )
-        {
-            Translation = c.Translation
-        };
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        _session.ChatReceived -= OnChatReceived;
+        _session.ChatsReset -= OnChatsReset;
+        _session.StatusChanged -= OnStatusChanged;
+        _configService.ConfigChanged -= OnConfigChanged;
     }
 }

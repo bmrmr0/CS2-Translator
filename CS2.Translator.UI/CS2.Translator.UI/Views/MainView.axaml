@@ -2,10 +2,31 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:CS2.Translator.UI.ViewModels"
+    xmlns:models="using:CS2.Translator.Core.Models"
     x:Class="CS2.Translator.UI.Views.MainView"
     x:DataType="vm:MainViewModel">
 
-    <Grid RowDefinitions="Auto,*"
+    <UserControl.Styles>
+        <Style Selector="TextBlock.translation">
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="TextBlock.translation.pending">
+            <Setter Property="Opacity" Value="0.5"/>
+            <Setter Property="FontStyle" Value="Italic"/>
+        </Style>
+        <Style Selector="TextBlock.translation.error">
+            <Setter Property="Foreground" Value="#FF7B72"/>
+            <Setter Property="FontStyle" Value="Italic"/>
+        </Style>
+        <Style Selector="Button.toolbar">
+            <Setter Property="Background" Value="#26263A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="CornerRadius" Value="6"/>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto"
           Background="#0E0E12">
 
         <!-- HEADER -->
@@ -15,15 +36,31 @@
                 BorderBrush="#2E2E40"
                 BorderThickness="0,0,0,1">
 
-            <Grid ColumnDefinitions="*,Auto">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto">
                 <TextBlock
+                    Grid.Column="0"
                     Text="CS2 Translator"
                     FontSize="16"
                     FontWeight="SemiBold"
+                    VerticalAlignment="Center"
                     Foreground="White"/>
 
                 <Button
                     Grid.Column="1"
+                    Classes="toolbar"
+                    Content="Clear"
+                    Margin="0,0,8,0"
+                    Command="{Binding ClearCommand}"/>
+
+                <Button
+                    Grid.Column="2"
+                    Classes="toolbar"
+                    Content="Reload"
+                    Margin="0,0,8,0"
+                    Command="{Binding ReloadCommand}"/>
+
+                <Button
+                    Grid.Column="3"
                     Content="Settings"
                     Command="{Binding OpenSettingsCommand}"
                     Padding="10,4"
@@ -38,38 +75,79 @@
                       Padding="12"
                       x:Name="ChatScrollViewer">
 
-            <ItemsControl ItemsSource="{Binding Chats}">
+            <ItemsControl x:Name="ChatItems" ItemsSource="{Binding Chats}">
                 <ItemsControl.ItemTemplate>
-                    <DataTemplate x:CompileBindings="False">
+                    <DataTemplate x:DataType="models:Chat">
 
-                        <Grid Margin="0,0,0,10">
-                            
-                            <Border
-                                Background="#1E1E26"
-                                CornerRadius="10"
-                                Padding="10"
-                                MaxWidth="380"
-                                HorizontalAlignment="Left">
+                        <Border
+                            Background="#1E1E26"
+                            CornerRadius="10"
+                            Padding="10"
+                            Margin="0,0,0,10"
+                            MaxWidth="420"
+                            HorizontalAlignment="Left">
 
-                                <StackPanel Spacing="4">
+                            <StackPanel Spacing="4">
+
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Border
+                                        Background="#3A3A5A"
+                                        CornerRadius="4"
+                                        Padding="4,1"
+                                        VerticalAlignment="Center"
+                                        IsVisible="{Binding HasChatTypeLabel}">
+                                        <TextBlock
+                                            Text="{Binding ChatTypeLabel}"
+                                            FontSize="9"
+                                            FontWeight="Bold"
+                                            Foreground="#C7C7E0"/>
+                                    </Border>
+
                                     <TextBlock
                                         Text="{Binding Name}"
-                                        FontSize="{Binding DataContext.NameFontSize, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).NameFontSize}"
                                         Foreground="#AAAAAA"/>
+                                </StackPanel>
 
+                                <TextBlock
+                                    Classes="translation"
+                                    Classes.pending="{Binding IsPending}"
+                                    Classes.error="{Binding HasError}"
+                                    Text="{Binding TranslationText}"
+                                    FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).TranslationFontSize}"
+                                    TextWrapping="Wrap"/>
+
+                                <!-- Original text, shown under the translation when enabled -->
+                                <StackPanel IsVisible="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).ShowOriginalMessage}">
                                     <TextBlock
-                                        Text="{Binding TranslationText}"
-                                        FontSize="{Binding DataContext.TranslationFontSize, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        Text="{Binding Message}"
+                                        IsVisible="{Binding HasTranslation}"
+                                        FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).TranslationFontSize}"
                                         TextWrapping="Wrap"
+                                        Opacity="0.45"
                                         Foreground="White"/>
                                 </StackPanel>
-                            </Border>
-                        </Grid>
+
+                            </StackPanel>
+                        </Border>
 
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
 
         </ScrollViewer>
+
+        <!-- STATUS BAR -->
+        <Border Grid.Row="2"
+                Background="#14141A"
+                BorderBrush="#2E2E40"
+                BorderThickness="0,1,0,0"
+                Padding="12,6">
+            <TextBlock
+                Text="{Binding StatusText}"
+                FontSize="11"
+                TextWrapping="Wrap"
+                Foreground="#8A8AA0"/>
+        </Border>
     </Grid>
 </UserControl>

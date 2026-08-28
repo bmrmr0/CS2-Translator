@@ -44,12 +44,29 @@ public class Chat : Log, INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(IsPending));
             OnPropertyChanged(nameof(HasError));
+            OnPropertyChanged(nameof(HasTranslation));
             OnPropertyChanged(nameof(TranslationText));
         }
     }
 
     public bool IsPending => State == TranslationState.Pending;
     public bool HasError => State == TranslationState.Failed;
+
+    /// <summary>True once a real translation is showing, so the original is worth displaying under it.</summary>
+    public bool HasTranslation => State == TranslationState.Translated
+                                  && !string.IsNullOrEmpty(Translation.Text)
+                                  && !string.Equals(Translation.Text, Message, StringComparison.Ordinal);
+
+    /// <summary>Short badge for team/dead/spectator chat. Empty for ordinary all-chat.</summary>
+    public string ChatTypeLabel => ChatType switch
+    {
+        ChatType.Team => "TEAM",
+        ChatType.Dead => "DEAD",
+        ChatType.Spectator => "SPEC",
+        _ => string.Empty
+    };
+
+    public bool HasChatTypeLabel => ChatTypeLabel.Length > 0;
 
     /// <summary>
     /// What the UI shows as the main line: the translation once it lands,
