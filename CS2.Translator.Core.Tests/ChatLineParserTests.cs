@@ -161,6 +161,71 @@ public class ChatLineParserTests
         Assert.Equal("why", chat.Message);
     }
 
+    // Verbatim console output from a real console.log. None of it is chat, but all of it
+    // passed the old "[word] after two spaces" gate and was displayed as chat messages.
+    [Theory]
+    [InlineData(@"08/30 21:08:42 [Entity System] Entity  [light_rect]: unrecognized parent """"")]
+    [InlineData(@"08/30 21:08:42 [Entity System] Entity  [env_combined_light_probe_volume]: unrecognized parent """"")]
+    [InlineData(@"08/30 21:08:42 [Entity System] Entity  [light_barn]: unrecognized parent """"")]
+    public void Ignores_engine_console_output(string line)
+    {
+        Assert.False(ChatLineParser.TryParse(line, out _));
+    }
+
+    // All chat carries no location and therefore no marker at all.
+    [Fact]
+    public void Parses_real_all_chat_without_a_marker()
+    {
+        var line = $"08/30 21:10:01  [ALL] голодаю{Ltr}: no thx";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("голодаю", chat.Name);
+        Assert.Equal("no thx", chat.Message);
+        Assert.Equal(ChatType.All, chat.ChatType);
+    }
+
+    [Fact]
+    public void Parses_a_name_containing_spaces()
+    {
+        var line = $"08/30 21:10:05  [ALL] cry me a river oh{Ltr}: go fast pls";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("cry me a river oh", chat.Name);
+        Assert.Equal("go fast pls", chat.Message);
+    }
+
+    [Theory]
+    [InlineData("ALL")]
+    [InlineData("T")]
+    public void Reports_a_dead_sender_as_dead_whichever_channel_they_used(string channel)
+    {
+        var line = $"08/30 21:10:09  [{channel}] cry me a river oh{Ltr} [DEAD]: last gay";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("cry me a river oh", chat.Name);
+        Assert.Equal("last gay", chat.Message);
+        Assert.Equal(ChatType.Dead, chat.ChatType);
+    }
+
+    [Fact]
+    public void Keeps_brackets_that_belong_to_the_player_name()
+    {
+        var line = $"08/30 21:10:12  [ALL] [NoSkill]bob{Ltr}: hi";
+
+        Assert.True(ChatLineParser.TryParse(line, out var chat));
+
+        Assert.Equal("[NoSkill]bob", chat.Name);
+    }
+
+    [Fact]
+    public void Does_not_let_a_chat_tag_inside_a_message_qualify_a_line()
+    {
+        Assert.False(ChatLineParser.TryParse("08/30 21:10:20 SomeSubsystem warning: check [CT] flag", out _));
+    }
+
     [Fact]
     public void Collapses_whitespace_in_names()
     {

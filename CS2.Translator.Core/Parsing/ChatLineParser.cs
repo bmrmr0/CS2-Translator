@@ -16,16 +16,16 @@ public static partial class ChatLineParser
 
     private const string Separator = ": ";
 
-    // Same gate the service used before: two spaces followed by a [TAG], or the clan-tag marker.
-    // Deliberately loose - community servers use tags we do not know about.
-    [GeneratedRegex(@"\s\s\[\w+\]", RegexOptions.CultureInvariant)]
-    private static partial Regex ChatLineGate();
+    // Only real chat tags qualify a line. The previous gate accepted any "[word]" after two
+    // spaces, which matched ordinary console output such as
+    //   "[Entity System] Entity  [light_rect]: unrecognized parent" - 162 of those in a
+    // single 2MB log, all of which were shown as chat messages.
+    [GeneratedRegex(@"\[\s*(ALL|T|CT|TEAM|DEAD|SPEC|SPECTATOR)\s*\]",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ChatTag();
 
     [GeneratedRegex(@"\d{1,2}/\d{1,2}\s+\d{1,2}:\d{1,2}:\d{1,2}", RegexOptions.CultureInvariant)]
     private static partial Regex Timestamp();
-
-    [GeneratedRegex(@"\[(\w+)\]", RegexOptions.CultureInvariant)]
-    private static partial Regex BracketTag();
 
     [GeneratedRegex(@"\*\s*DEAD\s*\*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DeadPrefix();
@@ -52,6 +52,12 @@ public static partial class ChatLineParser
         return chats;
     }
 
+    /// <summary>
+    /// CS2 writes chat in two shapes, both prefixed with a timestamp:
+    ///   all chat   "[ALL] NAME&lt;U+200E&gt;: message"   (optionally " [DEAD]" after the name)
+    ///   team chat  "[T] NAME&lt;U+200E&gt;﹫LOCATION: message"
+    /// Team chat carries the sender's position on the map; all chat does not.
+    /// </summary>
     public static bool TryParse(string line, out Chat chat)
     {
         chat = null!;
@@ -59,22 +65,23 @@ public static partial class ChatLineParser
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
-        if (!line.Contains(ClanTagMarker) && !ChatLineGate().IsMatch(line))
-            return false;
-
         var separator = FindSeparator(line);
         if (separator < 0)
             return false;
 
         var rawName = line[..separator];
+
+        // Everything from the marker onwards is the sender's map location, not their name.
+        var markerIndex = rawName.IndexOf(ClanTagMarker);
+        var namePart = markerIndex >= 0 ? rawName[..markerIndex] : rawName;
+
+        // Gate on the name side only, so a "[T]" typed into a message cannot qualify a line.
+        if (markerIndex < 0 && !ChatTag().IsMatch(namePart))
+            return false;
+
         var message = line[(separator + Separator.Length)..].Trim();
         if (message.Length == 0)
             return false;
-
-        // CS2 writes "NAME<U+200E>﹫LOCATION: message", so everything from the marker
-        // onwards is the player's position on the map, not part of their name.
-        var markerIndex = rawName.IndexOf(ClanTagMarker);
-        var namePart = markerIndex >= 0 ? rawName[..markerIndex] : rawName;
 
         var name = CleanName(namePart);
         if (name.Length == 0)
@@ -101,12 +108,16 @@ public static partial class ChatLineParser
         return line.IndexOf(Separator, StringComparison.Ordinal);
     }
 
-    private static ChatType DetectChatType(string rawName)
+    /// <summary>
+    /// A line can carry more than one tag, e.g. "[ALL] name [DEAD]". The most specific
+    /// state wins, because "dead" tells the reader more than "all chat" does.
+    /// </summary>
+    private static ChatType DetectChatType(string namePart)
     {
-        if (DeadPrefix().IsMatch(rawName))
+        if (DeadPrefix().IsMatch(namePart))
             return ChatType.Dead;
 
-        var team = TeamPrefix().Match(rawName);
+        var team = TeamPrefix().Match(namePart);
         if (team.Success)
         {
             return team.Groups[1].Value.Equals("Spectator", StringComparison.OrdinalIgnoreCase)
@@ -114,25 +125,30 @@ public static partial class ChatLineParser
                 : ChatType.Team;
         }
 
-        foreach (Match tag in BracketTag().Matches(rawName))
+        var result = ChatType.Unknown;
+
+        foreach (Match tag in ChatTag().Matches(namePart))
         {
             switch (tag.Groups[1].Value.ToUpperInvariant())
             {
-                case "ALL":
-                    return ChatType.All;
-                case "T":
-                case "CT":
-                case "TEAM":
-                    return ChatType.Team;
                 case "DEAD":
                     return ChatType.Dead;
                 case "SPEC":
                 case "SPECTATOR":
                     return ChatType.Spectator;
+                case "T":
+                case "CT":
+                case "TEAM":
+                    result = ChatType.Team;
+                    break;
+                case "ALL":
+                    if (result == ChatType.Unknown)
+                        result = ChatType.All;
+                    break;
             }
         }
 
-        return ChatType.Unknown;
+        return result;
     }
 
     private static string CleanName(string namePart)
@@ -140,7 +156,8 @@ public static partial class ChatLineParser
         var name = Timestamp().Replace(namePart, "");
         name = DeadPrefix().Replace(name, "");
         name = TeamPrefix().Replace(name, "");
-        name = BracketTag().Replace(name, "");
+        // Only known chat tags are stripped, so a player called "[NoSkill]bob" keeps their name.
+        name = ChatTag().Replace(name, "");
         name = ClanTag().Replace(name, "");
         name = RemoveFormatCharacters(name);
 

@@ -72,7 +72,7 @@
 
         <!-- CHAT -->
         <ScrollViewer Grid.Row="1"
-                      Padding="12"
+                      Padding="8"
                       x:Name="ChatScrollViewer">
 
             <ItemsControl x:Name="ChatItems" ItemsSource="{Binding Chats}">
@@ -81,15 +81,15 @@
 
                         <Border
                             Background="#1E1E26"
-                            CornerRadius="10"
-                            Padding="10"
-                            Margin="0,0,0,10"
+                            CornerRadius="8"
+                            Padding="8,5"
+                            Margin="0,0,0,5"
                             MaxWidth="420"
                             HorizontalAlignment="Left">
 
-                            <StackPanel Spacing="4">
+                            <StackPanel Spacing="1">
 
-                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                <StackPanel Orientation="Horizontal" Spacing="5">
                                     <Border
                                         Background="#3A3A5A"
                                         CornerRadius="4"
