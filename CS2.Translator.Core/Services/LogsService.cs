@@ -15,11 +15,15 @@ namespace CS2.Translator.Core.Services;
 /// </summary>
 public sealed class LogsService : IDisposable
 {
-    /// <summary>How much of the tail to show as backlog when the app starts.</summary>
-    private const int BacklogWindowBytes = 64 * 1024;
+    /// <summary>
+    /// How much of the tail to show as backlog when the app starts. CS2 writes a great
+    /// deal of engine output, so a small window covers only a few seconds of play:
+    /// 64KB of a real log held 419 lines and just 2 chat messages.
+    /// </summary>
+    private const int BacklogWindowBytes = 1024 * 1024;
 
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(250);
+    /// <summary>How often appended lines are picked up. Also the worst-case display delay.</summary>
+    private static readonly TimeSpan TickInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly string _logFilePath;
     private readonly string _logDirectory;
@@ -43,10 +47,14 @@ public sealed class LogsService : IDisposable
     private FileSystemWatcher? _watcher;
     private Timer? _pollTimer;
     private Task? _translationLoop;
-    private CancellationTokenSource? _debounceCts;
+
+    // Coalescing flags rather than a debounce. A debounce that restarts on every event
+    // starves outright while CS2 is writing continuously, which it does all match.
+    private int _resetRequested;
+    private int _reloadRequested;
+    private int _ticking;
 
     private long _lastFilePosition;
-    private DateTime _lastWriteTimeUtc = DateTime.MinValue;
     private bool _disposed;
 
     /// <summary>Raised on the dispatcher thread for every chat entry, before it is translated.</summary>
@@ -133,11 +141,12 @@ public sealed class LogsService : IDisposable
         _watcher.Error += (_, e) => DebugLogger.LogException(e.GetException(), "FileSystemWatcher");
         _watcher.EnableRaisingEvents = true;
 
-        // The watcher misses writes on some setups (network shares, Proton, buffered writers),
-        // so a cheap poll backs it up.
-        _pollTimer = new Timer(_ => PollLogFile(), null, PollInterval, PollInterval);
+        // The watcher only flags that something changed; the timer does the reading, so a
+        // continuous write stream cannot stop work from happening. It also covers setups
+        // where the watcher misses writes entirely (network shares, Proton, buffered writers).
+        _pollTimer = new Timer(_ => _ = TickAsync(), null, TickInterval, TickInterval);
 
-        DebugLogger.Log("Watcher and poll timer started", "Logs");
+        DebugLogger.Log("Watcher and read timer started", "Logs");
     }
 
     public void StopWatching()
@@ -147,83 +156,57 @@ public sealed class LogsService : IDisposable
 
         _pollTimer?.Dispose();
         _pollTimer = null;
-
-        // Cancel only - the debounce task that owns this source disposes it itself.
-        TryCancel(Interlocked.Exchange(ref _debounceCts, null));
     }
 
-    private void PollLogFile()
+    private void RequestReload() => Interlocked.Exchange(ref _reloadRequested, 1);
+
+    private void RequestReset() => Interlocked.Exchange(ref _resetRequested, 1);
+
+    /// <summary>
+    /// Single driver for all reads. Coalesces whatever happened since the last tick, and
+    /// skips its turn if the previous tick is still running rather than piling up.
+    /// </summary>
+    private async Task TickAsync()
     {
+        if (Interlocked.Exchange(ref _ticking, 1) == 1)
+            return;
+
         try
         {
             if (!File.Exists(_logFilePath))
                 return;
 
+            if (Interlocked.Exchange(ref _resetRequested, 0) == 1)
+            {
+                Interlocked.Exchange(ref _reloadRequested, 0);
+                await SeedBacklogAsync().ConfigureAwait(false);
+                return;
+            }
+
+            var flagged = Interlocked.Exchange(ref _reloadRequested, 0) == 1;
             var info = new FileInfo(_logFilePath);
 
             if (info.Length < _lastFilePosition)
             {
                 DebugLogger.Log("File shrank - treating as a new match log", "Logs");
-                RequestReset();
+                await SeedBacklogAsync().ConfigureAwait(false);
                 return;
             }
 
-            if (info.Length > _lastFilePosition || info.LastWriteTimeUtc != _lastWriteTimeUtc)
-                RequestReload();
-        }
-        catch (Exception ex)
-        {
-            DebugLogger.LogException(ex, "PollLogFile");
-        }
-    }
-
-    private void RequestReload() => _ = DebouncedAsync(ReadNewLinesAsync);
-
-    private void RequestReset() => _ = DebouncedAsync(SeedBacklogAsync);
-
-    private async Task DebouncedAsync(Func<Task> work)
-    {
-        var cts = new CancellationTokenSource();
-
-        // Capture the token before publishing the source, so it is always valid here
-        // even if another event supersedes us immediately.
-        var token = cts.Token;
-
-        // Each invocation owns its own source and disposes it in the finally below.
-        // Cancelling the previous one is safe; disposing it here is not, because its
-        // task may not have reached the delay yet.
-        var previous = Interlocked.Exchange(ref _debounceCts, cts);
-        TryCancel(previous);
-
-        try
-        {
-            await Task.Delay(DebounceDelay, token).ConfigureAwait(false);
-            await work().ConfigureAwait(false);
+            if (flagged || info.Length > _lastFilePosition)
+                await ReadNewLinesAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            // Superseded by a newer event, or shutting down.
+            // Shutting down.
         }
         catch (Exception ex)
         {
-            DebugLogger.LogException(ex, "DebouncedAsync");
+            DebugLogger.LogException(ex, "TickAsync");
         }
         finally
         {
-            Interlocked.CompareExchange(ref _debounceCts, null, cts);
-            cts.Dispose();
-        }
-    }
-
-    private static void TryCancel(CancellationTokenSource? cts)
-    {
-        try
-        {
-            cts?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Its own task already finished and disposed it.
+            Interlocked.Exchange(ref _ticking, 0);
         }
     }
 
@@ -418,7 +401,6 @@ public sealed class LogsService : IDisposable
         if (!File.Exists(_logFilePath))
         {
             _lastFilePosition = 0;
-            _lastWriteTimeUtc = DateTime.MinValue;
             throw new FileNotFoundException("console.log not found", _logFilePath);
         }
 
@@ -437,7 +419,6 @@ public sealed class LogsService : IDisposable
             result.Add(line);
 
         _lastFilePosition = fs.Length;
-        _lastWriteTimeUtc = File.GetLastWriteTimeUtc(_logFilePath);
 
         return result;
     }
@@ -464,7 +445,6 @@ public sealed class LogsService : IDisposable
             result.Add(line);
 
         _lastFilePosition = fs.Length;
-        _lastWriteTimeUtc = File.GetLastWriteTimeUtc(_logFilePath);
 
         return result;
     }
