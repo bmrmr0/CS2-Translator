@@ -19,9 +19,16 @@ public class AppConfig
     public bool AutoTranslate { get; set; } = true;
 
     /// <summary>
-    /// Show the untranslated message under the translation.
+    /// Show the untranslated message under the translation. Off by default - the
+    /// translation is the point, and the second line doubles the height of every entry.
     /// </summary>
-    public bool ShowOriginalMessage { get; set; } = true;
+    public bool ShowOriginalMessage { get; set; }
+
+    /// <summary>Show team chat. Hidden messages are never sent for translation.</summary>
+    public bool ShowTeamChat { get; set; } = true;
+
+    /// <summary>Show chat from dead players.</summary>
+    public bool ShowDeadChat { get; set; } = true;
 
     /// <summary>
     /// Read console.log from the beginning on startup instead of tailing from the end.

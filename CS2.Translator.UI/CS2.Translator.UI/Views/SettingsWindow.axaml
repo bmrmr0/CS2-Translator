@@ -110,6 +110,14 @@
                     <CheckBox IsChecked="{Binding ShowOriginalMessage}"
                               Content="Show the original message under the translation"/>
 
+                    <TextBlock Classes="label" Text="Show these chat channels"/>
+                    <CheckBox IsChecked="{Binding ShowTeamChat}"
+                              Content="Team chat"/>
+                    <CheckBox IsChecked="{Binding ShowDeadChat}"
+                              Content="Dead players"/>
+                    <TextBlock Classes="hint"
+                               Text="Hidden channels are not translated either, so turning them off also reduces requests. All chat is always shown."/>
+
                     <CheckBox IsChecked="{Binding TranslateHistoryOnStartup}"
                               Content="Translate existing console.log history on startup"/>
                     <TextBlock Classes="hint"

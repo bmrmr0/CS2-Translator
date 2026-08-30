@@ -63,7 +63,8 @@ If the status bar says the folder is wrong, use **Browse...** in Settings to poi
 | Your player name | Messages from this name are shown as-is and never sent for translation. |
 | Font sizes | Separate sizes for player names and translations. |
 | Translate automatically | Turn off to list chat without translating it. |
-| Show the original message | Displays the untranslated text under the translation. |
+| Show the original message | Displays the untranslated text under the translation. Off by default. |
+| Show team chat / dead players | Hide a channel to keep it off screen. Hidden channels are not translated either, so this also reduces requests. All chat is always shown. |
 | Translate history on startup | Off by default. See the note below. |
 
 Changing any setting takes effect immediately - no restart needed.

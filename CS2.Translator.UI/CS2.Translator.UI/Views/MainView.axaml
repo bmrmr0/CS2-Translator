@@ -83,13 +83,19 @@
                             Background="#1E1E26"
                             CornerRadius="8"
                             Padding="8,5"
-                            Margin="0,0,0,5"
-                            MaxWidth="420"
-                            HorizontalAlignment="Left">
+                            Margin="0,0,0,4">
 
-                            <StackPanel Spacing="1">
+                            <!-- Name on the left, message to its right: chat lines are short
+                                 and stacking them wasted most of the window width. -->
+                            <Grid ColumnDefinitions="Auto,*">
 
-                                <StackPanel Orientation="Horizontal" Spacing="5">
+                                <StackPanel
+                                    Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    Spacing="5"
+                                    Margin="0,0,8,0"
+                                    VerticalAlignment="Top">
+
                                     <Border
                                         Background="#3A3A5A"
                                         CornerRadius="4"
@@ -103,32 +109,38 @@
                                             Foreground="#C7C7E0"/>
                                     </Border>
 
+                                    <!-- Capped so one long name cannot squeeze out the message -->
                                     <TextBlock
                                         Text="{Binding Name}"
+                                        ToolTip.Tip="{Binding Name}"
+                                        MaxWidth="150"
+                                        TextTrimming="CharacterEllipsis"
                                         FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).NameFontSize}"
                                         Foreground="#AAAAAA"/>
                                 </StackPanel>
 
-                                <TextBlock
-                                    Classes="translation"
-                                    Classes.pending="{Binding IsPending}"
-                                    Classes.error="{Binding HasError}"
-                                    Text="{Binding TranslationText}"
-                                    FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).TranslationFontSize}"
-                                    TextWrapping="Wrap"/>
-
-                                <!-- Original text, shown under the translation when enabled -->
-                                <StackPanel IsVisible="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).ShowOriginalMessage}">
+                                <StackPanel Grid.Column="1" Spacing="1">
                                     <TextBlock
-                                        Text="{Binding Message}"
-                                        IsVisible="{Binding HasTranslation}"
+                                        Classes="translation"
+                                        Classes.pending="{Binding IsPending}"
+                                        Classes.error="{Binding HasError}"
+                                        Text="{Binding TranslationText}"
                                         FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).TranslationFontSize}"
-                                        TextWrapping="Wrap"
-                                        Opacity="0.45"
-                                        Foreground="White"/>
+                                        TextWrapping="Wrap"/>
+
+                                    <!-- Original text, shown under the translation when enabled -->
+                                    <StackPanel IsVisible="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).ShowOriginalMessage}">
+                                        <TextBlock
+                                            Text="{Binding Message}"
+                                            IsVisible="{Binding HasTranslation}"
+                                            FontSize="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).TranslationFontSize}"
+                                            TextWrapping="Wrap"
+                                            Opacity="0.45"
+                                            Foreground="White"/>
+                                    </StackPanel>
                                 </StackPanel>
 
-                            </StackPanel>
+                            </Grid>
                         </Border>
 
                     </DataTemplate>

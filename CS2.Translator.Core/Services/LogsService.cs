@@ -28,6 +28,8 @@ public sealed class LogsService : IDisposable
     private readonly string _playerName;
     private readonly bool _autoTranslate;
     private readonly bool _translateHistoryOnStartup;
+    private readonly bool _showTeamChat;
+    private readonly bool _showDeadChat;
     private readonly int _maxChats;
     private readonly Action<Action> _post;
 
@@ -74,6 +76,8 @@ public sealed class LogsService : IDisposable
         _playerName = config.PlayerName;
         _autoTranslate = config.AutoTranslate;
         _translateHistoryOnStartup = config.TranslateHistoryOnStartup;
+        _showTeamChat = config.ShowTeamChat;
+        _showDeadChat = config.ShowDeadChat;
         _maxChats = config.MaxChats;
 
         // Runs continuations on the UI thread when the host supplies a dispatcher.
@@ -249,7 +253,7 @@ public sealed class LogsService : IDisposable
                 lines = new List<string>();
             }
 
-            var parsed = ChatLineParser.ParseLines(lines);
+            var parsed = ChatLineParser.ParseLines(lines).Where(ShouldDisplay).ToList();
             if (parsed.Count > _maxChats)
                 parsed = parsed.GetRange(parsed.Count - _maxChats, _maxChats);
 
@@ -304,10 +308,13 @@ public sealed class LogsService : IDisposable
             if (lines.Count == 0)
                 return;
 
-            var parsed = ChatLineParser.ParseLines(lines);
+            var all = ChatLineParser.ParseLines(lines);
+            var parsed = all.Where(ShouldDisplay).ToList();
 
             if (DebugLogger.Enabled)
-                DebugLogger.Log($"Read {lines.Count} new lines, {parsed.Count} of them chat", "Logs");
+                DebugLogger.Log(
+                    $"Read {lines.Count} new lines, {all.Count} of them chat, {parsed.Count} after filtering",
+                    "Logs");
 
             if (parsed.Count == 0)
                 return;
@@ -362,6 +369,17 @@ public sealed class LogsService : IDisposable
         _autoTranslate
         && !chat.IsOwnMessage
         && TranslatorService.IsTranslatable(chat.Message);
+
+    /// <summary>
+    /// Filtering here rather than in the view means hidden messages are never sent
+    /// for translation, which keeps them off the rate limit budget entirely.
+    /// </summary>
+    private bool ShouldDisplay(Chat chat) => chat.ChatType switch
+    {
+        ChatType.Team => _showTeamChat,
+        ChatType.Dead => _showDeadChat,
+        _ => true
+    };
 
     private async Task TranslationLoopAsync(CancellationToken ct)
     {
