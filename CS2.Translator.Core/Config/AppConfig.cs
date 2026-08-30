@@ -24,11 +24,11 @@ public class AppConfig
     /// </summary>
     public bool ShowOriginalMessage { get; set; }
 
-    /// <summary>Show team chat. Hidden messages are never sent for translation.</summary>
-    public bool ShowTeamChat { get; set; } = true;
+    /// <summary>Show the TEAM badge next to team chat. Purely visual - the message is shown either way.</summary>
+    public bool ShowTeamIndicator { get; set; } = true;
 
-    /// <summary>Show chat from dead players.</summary>
-    public bool ShowDeadChat { get; set; } = true;
+    /// <summary>Show the DEAD badge next to chat from dead players.</summary>
+    public bool ShowDeadIndicator { get; set; } = true;
 
     /// <summary>
     /// Read console.log from the beginning on startup instead of tailing from the end.

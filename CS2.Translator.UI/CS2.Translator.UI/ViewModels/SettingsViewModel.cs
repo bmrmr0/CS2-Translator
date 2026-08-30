@@ -42,10 +42,10 @@ public partial class SettingsViewModel : ViewModelBase
     private bool _translateHistoryOnStartup;
 
     [ObservableProperty]
-    private bool _showTeamChat;
+    private bool _showTeamIndicator;
 
     [ObservableProperty]
-    private bool _showDeadChat;
+    private bool _showDeadIndicator;
 
     [ObservableProperty]
     private string _pathStatus = "";
@@ -80,8 +80,8 @@ public partial class SettingsViewModel : ViewModelBase
         _autoTranslate = config.AutoTranslate;
         _showOriginalMessage = config.ShowOriginalMessage;
         _translateHistoryOnStartup = config.TranslateHistoryOnStartup;
-        _showTeamChat = config.ShowTeamChat;
-        _showDeadChat = config.ShowDeadChat;
+        _showTeamIndicator = config.ShowTeamIndicator;
+        _showDeadIndicator = config.ShowDeadIndicator;
 
         UpdatePathStatus();
     }
@@ -152,8 +152,8 @@ public partial class SettingsViewModel : ViewModelBase
         config.AutoTranslate = AutoTranslate;
         config.ShowOriginalMessage = ShowOriginalMessage;
         config.TranslateHistoryOnStartup = TranslateHistoryOnStartup;
-        config.ShowTeamChat = ShowTeamChat;
-        config.ShowDeadChat = ShowDeadChat;
+        config.ShowTeamIndicator = ShowTeamIndicator;
+        config.ShowDeadIndicator = ShowDeadIndicator;
 
         // Save validates and clamps, then notifies listeners so the session restarts.
         _configService.Save();

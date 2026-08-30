@@ -3,6 +3,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:CS2.Translator.UI.ViewModels"
     xmlns:models="using:CS2.Translator.Core.Models"
+    xmlns:conv="using:Avalonia.Data.Converters"
     x:Class="CS2.Translator.UI.Views.MainView"
     x:DataType="vm:MainViewModel">
 
@@ -17,6 +18,17 @@
         <Style Selector="TextBlock.translation.error">
             <Setter Property="Foreground" Value="#FF7B72"/>
             <Setter Property="FontStyle" Value="Italic"/>
+        </Style>
+        <Style Selector="Border.badge">
+            <Setter Property="Background" Value="#3A3A5A"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="TextBlock.badgeText">
+            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#C7C7E0"/>
         </Style>
         <Style Selector="Button.toolbar">
             <Setter Property="Background" Value="#26263A"/>
@@ -96,17 +108,30 @@
                                     Margin="0,0,8,0"
                                     VerticalAlignment="Top">
 
-                                    <Border
-                                        Background="#3A3A5A"
-                                        CornerRadius="4"
-                                        Padding="4,1"
-                                        VerticalAlignment="Center"
-                                        IsVisible="{Binding HasChatTypeLabel}">
-                                        <TextBlock
-                                            Text="{Binding ChatTypeLabel}"
-                                            FontSize="9"
-                                            FontWeight="Bold"
-                                            Foreground="#C7C7E0"/>
+                                    <!-- One badge per type, each visible only when the message is
+                                         that type AND its indicator is enabled. At most one shows. -->
+                                    <Border Classes="badge">
+                                        <Border.IsVisible>
+                                            <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
+                                                <Binding Path="IsTeamChat"/>
+                                                <Binding Path="$parent[ItemsControl].((vm:MainViewModel)DataContext).ShowTeamIndicator"/>
+                                            </MultiBinding>
+                                        </Border.IsVisible>
+                                        <TextBlock Classes="badgeText" Text="TEAM"/>
+                                    </Border>
+
+                                    <Border Classes="badge">
+                                        <Border.IsVisible>
+                                            <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
+                                                <Binding Path="IsDeadChat"/>
+                                                <Binding Path="$parent[ItemsControl].((vm:MainViewModel)DataContext).ShowDeadIndicator"/>
+                                            </MultiBinding>
+                                        </Border.IsVisible>
+                                        <TextBlock Classes="badgeText" Text="DEAD"/>
+                                    </Border>
+
+                                    <Border Classes="badge" IsVisible="{Binding IsSpectatorChat}">
+                                        <TextBlock Classes="badgeText" Text="SPEC"/>
                                     </Border>
 
                                     <!-- Capped so one long name cannot squeeze out the message -->

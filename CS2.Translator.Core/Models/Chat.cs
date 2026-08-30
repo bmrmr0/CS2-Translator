@@ -68,6 +68,11 @@ public class Chat : Log, INotifyPropertyChanged
 
     public bool HasChatTypeLabel => ChatTypeLabel.Length > 0;
 
+    // Per-type flags so the view can gate each badge on its own setting without a converter.
+    public bool IsTeamChat => ChatType == ChatType.Team;
+    public bool IsDeadChat => ChatType == ChatType.Dead;
+    public bool IsSpectatorChat => ChatType == ChatType.Spectator;
+
     /// <summary>
     /// What the UI shows as the main line: the translation once it lands,
     /// the original while it is still pending or when translation was skipped.

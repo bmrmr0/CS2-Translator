@@ -31,6 +31,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public double NameFontSize => _configService.Config.NameFontSize;
     public double TranslationFontSize => _configService.Config.TranslationFontSize;
     public bool ShowOriginalMessage => _configService.Config.ShowOriginalMessage;
+    public bool ShowTeamIndicator => _configService.Config.ShowTeamIndicator;
+    public bool ShowDeadIndicator => _configService.Config.ShowDeadIndicator;
 
     private int MaxChats => _configService.Config.MaxChats;
 
@@ -84,6 +86,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(NameFontSize));
         OnPropertyChanged(nameof(TranslationFontSize));
         OnPropertyChanged(nameof(ShowOriginalMessage));
+        OnPropertyChanged(nameof(ShowTeamIndicator));
+        OnPropertyChanged(nameof(ShowDeadIndicator));
 
         // Language, install path and player name are baked into the services,
         // so they only take effect once those are rebuilt.
